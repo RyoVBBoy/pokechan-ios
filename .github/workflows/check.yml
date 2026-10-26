@@ -37,13 +37,12 @@ jobs:
           TEAM_ID=AAAAAAAAAA BUNDLE_ID=jp.example.pokechan BUILD_NUMBER=1 xcodegen generate > xg.log 2>&1 || { tail -10 xg.log | sed 's/^/::error::xcodegen /'; exit 1; }
           tail -3 xg.log
 
-      - name: コンパイル（署名なし・シミュレータ向け）
+      - name: コンパイル（署名なし）
         run: |
-          set -o pipefail
-          xcodebuild build -project PokeChan.xcodeproj -scheme PokeChan \
-            -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO 2>&1 \
-            | tee build.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
-          grep -E "^/.*: error: " build.log | sed -E 's#^.*/([^/]+:[0-9]+:[0-9]+): error: #::error::\1 #' | head -40
+          xcodebuild build -project PokeChan.xcodeproj -scheme PokeChan -configuration Debug \
+            -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO > build.log 2>&1 || true
+          grep -E "error:|BUILD (SUCCEEDED|FAILED)" build.log | head -60
+          grep -E "error:" build.log | sed -E 's#^/[^ ]*/([^/]+:[0-9]+:[0-9]+): error: #\1 #' | sort -u | head -10 | sed 's/^/::error::/'
           grep -q "BUILD SUCCEEDED" build.log && echo "::notice::コンパイル成功" || { echo "::error::コンパイル失敗"; exit 1; }
 
       - name: ログを残す
