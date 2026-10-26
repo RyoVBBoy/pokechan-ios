@@ -1,0 +1,52 @@
+# Appleの登録がなくても動く「コンパイル確認」。
+# アプリのコードに文法の間違いがないかを、クラウドのMacで確かめます（署名・TestFlightへの送信はしません）。
+name: コンパイル確認
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: アプリのファイルを取り出す
+        run: |
+          if [ -f app.zip ]; then
+            unzip -o -q app.zip -d .
+          else
+            grep -oE 'echo "[A-Za-z0-9+/=]{1000,}"' .github/workflows/testflight.yml | sed 's/^echo "//; s/"$//' | base64 -d | tar -xJ
+          fi
+          ls
+
+      - name: いちばん新しい正式版の Xcode を選ぶ
+        run: |
+          X=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
+          sudo xcode-select -s "$X"
+          xcodebuild -version
+
+      - name: プロジェクトを作る（仮のIDで）
+        run: |
+          brew install xcodegen
+          TEAM_ID=AAAAAAAAAA BUNDLE_ID=jp.example.pokechan BUILD_NUMBER=1 xcodegen generate
+
+      - name: コンパイル（署名なし・シミュレータ向け）
+        run: |
+          set -o pipefail
+          xcodebuild build -project PokeChan.xcodeproj -scheme PokeChan \
+            -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO 2>&1 \
+            | tee build.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
+          grep -E "^/.*: error: " build.log | sed -E 's#^.*/([^/]+:[0-9]+:[0-9]+): error: #::error::\1 #' | head -40
+          grep -q "BUILD SUCCEEDED" build.log && echo "::notice::コンパイル成功" || { echo "::error::コンパイル失敗"; exit 1; }
+
+      - name: ログを残す
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-log
+          path: build.log
+          if-no-files-found: ignore
