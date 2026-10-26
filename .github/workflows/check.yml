@@ -19,9 +19,10 @@ jobs:
           if [ -f app.zip ]; then
             unzip -o -q app.zip -d .
           else
-            grep -oE 'echo "[A-Za-z0-9+/=]{1000,}"' .github/workflows/testflight.yml | sed 's/^echo "//; s/"$//' | base64 -d | tar -xJ
+            python3 -c "import re,base64,sys;t=open('.github/workflows/testflight.yml').read();m=re.search(r'echo \"([A-Za-z0-9+/=]{1000,})\"',t);sys.stdout.buffer.write(base64.b64decode(m.group(1)))" | tar -xJ
           fi
           ls
+          test -f project.yml || { echo "::error::アプリのファイルを取り出せませんでした"; exit 1; }
 
       - name: いちばん新しい正式版の Xcode を選ぶ
         run: |
@@ -31,8 +32,10 @@ jobs:
 
       - name: プロジェクトを作る（仮のIDで）
         run: |
-          brew install xcodegen
-          TEAM_ID=AAAAAAAAAA BUNDLE_ID=jp.example.pokechan BUILD_NUMBER=1 xcodegen generate
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew install xcodegen > brew.log 2>&1 || { tail -10 brew.log | sed 's/^/::error::brew /'; exit 1; }
+          TEAM_ID=AAAAAAAAAA BUNDLE_ID=jp.example.pokechan BUILD_NUMBER=1 xcodegen generate > xg.log 2>&1 || { tail -10 xg.log | sed 's/^/::error::xcodegen /'; exit 1; }
+          tail -3 xg.log
 
       - name: コンパイル（署名なし・シミュレータ向け）
         run: |
