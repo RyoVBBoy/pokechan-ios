@@ -1,0 +1,83 @@
+# main に変更を入れる（または Actions タブから手動実行する）と、
+# クラウドのMacでアプリを組み立てて TestFlight に送ります。
+name: TestFlight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      TEAM_ID: ${{ secrets.TEAM_ID }}
+      BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
+      BUILD_NUMBER: ${{ github.run_number }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: アップロードされた app.zip を展開
+        run: |
+          if [ -f app.zip ]; then unzip -o -q app.zip -d . && echo "app.zip を展開しました"; ls; else echo "app.zip はありません（そのまま使います）"; fi
+
+      - name: 設定が入っているか確認
+        run: |
+          for v in TEAM_ID BUNDLE_ID ASC_KEY_ID ASC_ISSUER_ID; do
+            if [ -z "${!v}" ]; then echo "::error::GitHub の Secrets に $v がありません"; exit 1; fi
+          done
+          if [ -z "${{ secrets.ASC_KEY_P8 }}" ]; then echo "::error::GitHub の Secrets に ASC_KEY_P8 がありません"; exit 1; fi
+
+      - name: いちばん新しい正式版の Xcode を選ぶ
+        run: |
+          X=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
+          echo "使う Xcode: $X"
+          sudo xcode-select -s "$X"
+          xcodebuild -version
+
+      - name: プロジェクトを作る（XcodeGen）
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: App Store Connect の鍵を用意
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys"
+          printf '%s' "${{ secrets.ASC_KEY_P8 }}" > "$RUNNER_TEMP/keys/AuthKey.p8"
+          echo "ASC_KEY_PATH=$RUNNER_TEMP/keys/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: 組み立て（アーカイブ）
+        run: |
+          xcodebuild archive \
+            -project PokeChan.xcodeproj -scheme PokeChan -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/PokeChan.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            | tee "$RUNNER_TEMP/archive.log" | grep -E "error:|warning: .*Signing|ARCHIVE (SUCCEEDED|FAILED)" || true
+          test -d "$RUNNER_TEMP/PokeChan.xcarchive" || { echo "::error::組み立てに失敗しました。下のログを確認してください"; tail -80 "$RUNNER_TEMP/archive.log"; exit 1; }
+
+      - name: TestFlight に送る
+        run: |
+          sed "s/__TEAM_ID__/$TEAM_ID/" ExportOptions.plist > "$RUNNER_TEMP/ExportOptions.plist"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/PokeChan.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: ログを残す
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: ${{ runner.temp }}/*.log
+          if-no-files-found: ignore
